@@ -1,13 +1,13 @@
 {
   "version": 2,
   "functions": {
-    "api/*.py": {
+    "api/index.py": {
       "maxDuration": 60
     }
   },
   "rewrites": [
-    { "source": "/remove-background", "destination": "/api/main" },
-    { "source": "/api/(.*)", "destination": "/api/main" },
+    { "source": "/remove-background", "destination": "/api/index.py" },
+    { "source": "/api/(.*)", "destination": "/api/index.py" },
     { "source": "/(.*)", "destination": "/$1" }
   ]
 }
