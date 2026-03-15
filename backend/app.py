@@ -9,9 +9,10 @@ from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 app = FastAPI(title="AI Background Remover API")
+IS_VERCEL = bool(os.environ.get("VERCEL"))
 
 # Vercel compatibility: set model home to /tmp
-if os.environ.get("VERCEL"):
+if IS_VERCEL:
     os.environ["U2NET_HOME"] = "/tmp/.u2net"
 
 # CORS — allow the Vite dev server and common origins
@@ -29,24 +30,32 @@ ALLOWED_TYPES = {
     "image/png",
     "image/webp",
 }
-MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
-DEFAULT_MODEL_NAME = "isnet-general-use"
+MAX_FILE_SIZE = 4 * 1024 * 1024 if IS_VERCEL else 20 * 1024 * 1024
+DEFAULT_MODEL_NAME = "u2netp" if IS_VERCEL else "isnet-general-use"
 DEFAULT_MODE = "best"
 
 SUPPORTED_MODELS = {
+    "u2netp": "Serverless-safe lightweight model",
     "birefnet-general-lite": "Ultra-High Precision (Slow)",
     "isnet-general-use": "Pro Quality (Balanced - Default)",
     "u2net": "Legacy Model",
 }
 
-QUALITY_MODES = {
-    "best": {"max_side": 1280, "default_model": "isnet-general-use"},
-    "balanced": {"max_side": 1024, "default_model": "isnet-general-use"},
-    "fast": {"max_side": 768, "default_model": "isnet-general-use"},
-}
+if IS_VERCEL:
+    QUALITY_MODES = {
+        "best": {"max_side": 960, "default_model": DEFAULT_MODEL_NAME},
+        "balanced": {"max_side": 768, "default_model": DEFAULT_MODEL_NAME},
+        "fast": {"max_side": 512, "default_model": DEFAULT_MODEL_NAME},
+    }
+else:
+    QUALITY_MODES = {
+        "best": {"max_side": 1280, "default_model": "isnet-general-use"},
+        "balanced": {"max_side": 1024, "default_model": "isnet-general-use"},
+        "fast": {"max_side": 768, "default_model": "isnet-general-use"},
+    }
 
 CPU_COUNT = os.cpu_count() or 4
-INFERENCE_THREADS = max(1, min(4, CPU_COUNT))
+INFERENCE_THREADS = 1 if IS_VERCEL else max(1, min(4, CPU_COUNT))
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -179,7 +188,7 @@ def clean_alpha_edges(image):
     except ImportError:
         ndimage = None
 
-    if ndimage is not None:
+    if ndimage is not None and not IS_VERCEL:
         # 2. Morphological operations: close holes then erode background fringe
         binary_mask = (alpha > 128).astype(np.uint8)
         mask_refined = ndimage.binary_closing(binary_mask, iterations=1).astype(np.uint8)
@@ -250,6 +259,9 @@ def process_image(
 @app.on_event("startup")
 async def preload_default_model():
     """Kick off model loading in a background thread so startup is non-blocking."""
+    if IS_VERCEL:
+        return
+
     def _load():
         try:
             logger.info("[BG] Loading AI model '%s' in background...", DEFAULT_MODEL_NAME)
@@ -270,10 +282,12 @@ async def root():
 @app.get("/config")
 async def config():
     return {
+        "isVercel": IS_VERCEL,
         "defaultModel": DEFAULT_MODEL_NAME,
         "defaultMode": DEFAULT_MODE,
         "supportedModels": SUPPORTED_MODELS,
         "qualityModes": QUALITY_MODES,
+        "maxFileSize": MAX_FILE_SIZE,
         "inferenceThreads": INFERENCE_THREADS,
     }
 
