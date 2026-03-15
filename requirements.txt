@@ -1,0 +1,7 @@
+fastapi
+python-multipart
+rembg[cpu]
+Pillow
+scipy
+numpy
+onnxruntime
