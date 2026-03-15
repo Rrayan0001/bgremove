@@ -51,10 +51,16 @@ INFERENCE_THREADS = max(1, min(4, CPU_COUNT))
 logger = logging.getLogger("uvicorn.error")
 
 def get_execution_providers():
-    """Lazy-load ONNX providers only when needed."""
+    """Return stable execution providers for ONNX Runtime.
+
+    CoreML can be faster on Apple Silicon, but it is not always stable across
+    local/dev environments. Keep CPU as the safe default and allow opting into
+    CoreML explicitly when desired.
+    """
     import onnxruntime as ort
+
     available = set(ort.get_available_providers())
-    if "CoreMLExecutionProvider" in available:
+    if os.environ.get("ENABLE_COREML", "").lower() in {"1", "true", "yes"} and "CoreMLExecutionProvider" in available:
         return ["CoreMLExecutionProvider", "CPUExecutionProvider"]
     return ["CPUExecutionProvider"]
 
@@ -157,10 +163,9 @@ def resize_for_inference(image, max_side: int):
 
 
 def clean_alpha_edges(image):
-    """Refine alpha edges using morphological operations + thresholding."""
+    """Refine alpha edges with a safe SciPy fallback."""
     import numpy as np
     from PIL import Image, ImageFilter
-    from scipy import ndimage
 
     arr = np.array(image)
     alpha = arr[:, :, 3].astype(np.float32)
@@ -169,16 +174,20 @@ def clean_alpha_edges(image):
     alpha[alpha < 45] = 0
     alpha[alpha > 210] = 255
 
-    # 2. Morphological operations: Close holes then Erode background fringe
-    binary_mask = (alpha > 128).astype(np.uint8)
-    # Fill small holes inside the subject (e.g. gaps in shirt/hair)
-    mask_refined = ndimage.binary_closing(binary_mask, iterations=1).astype(np.uint8)
-    # Erode the boundary to kill the background halo
-    eroded = ndimage.binary_erosion(mask_refined, iterations=1).astype(np.uint8)
+    try:
+        from scipy import ndimage
+    except ImportError:
+        ndimage = None
 
-    # 3. Smooth the transition area
-    boundary = mask_refined - eroded
-    alpha[boundary == 1] = np.clip(alpha[boundary == 1] * 0.3, 0, 255)
+    if ndimage is not None:
+        # 2. Morphological operations: close holes then erode background fringe
+        binary_mask = (alpha > 128).astype(np.uint8)
+        mask_refined = ndimage.binary_closing(binary_mask, iterations=1).astype(np.uint8)
+        eroded = ndimage.binary_erosion(mask_refined, iterations=1).astype(np.uint8)
+
+        # 3. Smooth the transition area
+        boundary = mask_refined - eroded
+        alpha[boundary == 1] = np.clip(alpha[boundary == 1] * 0.3, 0, 255)
 
     # 4. High-quality smoothing for the mask
     alpha_img = Image.fromarray(alpha.astype(np.uint8), mode="L")
@@ -274,7 +283,7 @@ async def remove_background(
     image: UploadFile = File(...),
     model: str | None = Form(None),
     mode: str = Form(DEFAULT_MODE),
-    alpha_matting: bool = Form(True),
+    alpha_matting: bool = Form(False),
 ):
     # ── Validate content type ──────────────────────────────────────────
     if image.content_type not in ALLOWED_TYPES:
