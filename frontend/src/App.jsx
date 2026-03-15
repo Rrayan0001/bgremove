@@ -55,9 +55,48 @@ export default function App() {
     document.documentElement.style.colorScheme = theme;
   }, [theme]);
 
-  const handleToggleTheme = useCallback(() => {
-    setTheme((currentTheme) => (currentTheme === 'light' ? 'dark' : 'light'));
-  }, []);
+const MAX_VERCEL_BODY_SIZE = 4 * 1024 * 1024; // 4MB safe limit for Vercel
+
+async function compressImage(file) {
+  if (file.size <= MAX_VERCEL_BODY_SIZE) return file;
+
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target.result;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+
+        // Roughly half the resolution if it's very large
+        const scaleFactor = Math.sqrt(MAX_VERCEL_BODY_SIZE / file.size) * 0.9;
+        width *= scaleFactor;
+        height *= scaleFactor;
+
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        canvas.toBlob(
+          (blob) => {
+            resolve(new File([blob], file.name, { type: 'image/jpeg' }));
+          },
+          'image/jpeg',
+          0.85 // 85% quality
+        );
+      };
+    };
+  });
+}
+
+const handleToggleTheme = useCallback(() => {
+  setTheme((currentTheme) => (currentTheme === 'light' ? 'dark' : 'light'));
+}, []);
 
   const handleUpload = useCallback(async (file, options) => {
     const reader = new FileReader();
@@ -74,8 +113,10 @@ export default function App() {
     });
 
     try {
+      const processedFile = await compressImage(file);
+
       const formData = new FormData();
-      formData.append('image', file);
+      formData.append('image', processedFile);
 
       if (options?.model) {
         formData.append('model', options.model);
