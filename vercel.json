@@ -12,9 +12,9 @@
     }
   ],
   "routes": [
-    { "src": "/remove-background", "dest": "api/index.py" },
-    { "src": "/api/(.*)", "dest": "api/index.py" },
+    { "src": "/remove-background", "dest": "/api/index.py" },
+    { "src": "/api/(.*)", "dest": "/api/index.py" },
     { "handle": "filesystem" },
-    { "src": "/(.*)", "dest": "/frontend/dist/$1" }
+    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
