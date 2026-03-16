@@ -15,7 +15,7 @@ const DEFAULT_API_CONFIG = {
   deploymentTarget: API_BASE_URL ? 'render' : 'local',
   maxFileSizeMb: MAX_UPLOAD_SIZE_MB,
 };
-const REQUEST_TIMEOUT_MS = 90000;
+const REQUEST_TIMEOUT_MS = 180000;
 
 async function readErrorMessage(response) {
   const contentType = response.headers.get('content-type') || '';
