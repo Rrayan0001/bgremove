@@ -24,3 +24,9 @@ services:
         value: /tmp/.u2net
       - key: ENABLE_STARTUP_PRELOAD
         value: false
+      - key: FAST_MAX_SIDE
+        value: 512
+      - key: BALANCED_MAX_SIDE
+        value: 512
+      - key: BEST_MAX_SIDE
+        value: 512

@@ -1,7 +1,6 @@
 fastapi
+uvicorn
 python-multipart
 rembg[cpu]
 Pillow
-scipy
 numpy
-onnxruntime
