@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: bg-remove-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: CORS_ALLOW_ORIGINS
+        sync: false
+      - key: DEFAULT_MODEL
+        value: isnet-general-use
+      - key: DEFAULT_MODE
+        value: balanced
+      - key: FAST_MODEL
+        value: u2netp
+      - key: MAX_FILE_SIZE_MB
+        value: 10
+      - key: INFERENCE_THREADS
+        value: 1
+      - key: MODEL_CACHE_DIR
+        value: /tmp/.u2net
+      - key: ENABLE_STARTUP_PRELOAD
+        value: true

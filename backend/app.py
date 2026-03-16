@@ -9,17 +9,47 @@ from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 app = FastAPI(title="AI Background Remover API")
-IS_VERCEL = bool(os.environ.get("VERCEL"))
+logger = logging.getLogger("uvicorn.error")
 
-# Vercel compatibility: set model home to /tmp
-if IS_VERCEL:
-    os.environ["U2NET_HOME"] = "/tmp/.u2net"
 
-# CORS — allow the Vite dev server and common origins
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    try:
+        return max(1, int(value))
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r. Using %s instead.", name, value, default)
+        return default
+
+
+def parse_origins(value: str | None) -> list[str]:
+    if not value:
+        return ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+    origins = [origin.strip() for origin in value.split(",") if origin.strip()]
+    return origins or ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+
+DEPLOYMENT_TARGET = "render" if os.getenv("RENDER") else os.getenv("DEPLOYMENT_TARGET", "local")
+MODEL_CACHE_DIR = os.getenv("MODEL_CACHE_DIR", "/tmp/.u2net")
+os.environ.setdefault("U2NET_HOME", MODEL_CACHE_DIR)
+
+ALLOWED_ORIGINS = parse_origins(os.getenv("CORS_ALLOW_ORIGINS"))
+ALLOW_ALL_ORIGINS = "*" in ALLOWED_ORIGINS
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["*"] if ALLOW_ALL_ORIGINS else ALLOWED_ORIGINS,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -30,42 +60,50 @@ ALLOWED_TYPES = {
     "image/png",
     "image/webp",
 }
-MAX_FILE_SIZE = 4 * 1024 * 1024 if IS_VERCEL else 20 * 1024 * 1024
-DEFAULT_MODEL_NAME = "u2netp" if IS_VERCEL else "isnet-general-use"
-DEFAULT_MODE = "best"
 
 SUPPORTED_MODELS = {
-    "u2netp": "Serverless-safe lightweight model",
-    "birefnet-general-lite": "Ultra-High Precision (Slow)",
-    "isnet-general-use": "Pro Quality (Balanced - Default)",
-    "u2net": "Legacy Model",
+    "u2netp": "Lightweight model for faster turnaround",
+    "birefnet-general-lite": "Highest detail, slowest path",
+    "isnet-general-use": "Balanced quality and speed",
+    "u2net": "Legacy fallback model",
 }
 
-if IS_VERCEL:
-    QUALITY_MODES = {
-        "best": {"max_side": 960, "default_model": DEFAULT_MODEL_NAME},
-        "balanced": {"max_side": 768, "default_model": DEFAULT_MODEL_NAME},
-        "fast": {"max_side": 512, "default_model": DEFAULT_MODEL_NAME},
-    }
-else:
-    QUALITY_MODES = {
-        "best": {"max_side": 1280, "default_model": "isnet-general-use"},
-        "balanced": {"max_side": 1024, "default_model": "isnet-general-use"},
-        "fast": {"max_side": 768, "default_model": "isnet-general-use"},
-    }
+DEFAULT_MODEL_NAME = os.getenv("DEFAULT_MODEL", "isnet-general-use")
+if DEFAULT_MODEL_NAME not in SUPPORTED_MODELS:
+    logger.warning("Unsupported DEFAULT_MODEL=%r. Falling back to isnet-general-use.", DEFAULT_MODEL_NAME)
+    DEFAULT_MODEL_NAME = "isnet-general-use"
 
-CPU_COUNT = os.cpu_count() or 4
-INFERENCE_THREADS = 1 if IS_VERCEL else max(1, min(4, CPU_COUNT))
+QUALITY_MODES = {
+    "best": {
+        "max_side": env_int("BEST_MAX_SIDE", 1280),
+        "default_model": os.getenv("BEST_MODEL", DEFAULT_MODEL_NAME),
+    },
+    "balanced": {
+        "max_side": env_int("BALANCED_MAX_SIDE", 1024),
+        "default_model": os.getenv("BALANCED_MODEL", DEFAULT_MODEL_NAME),
+    },
+    "fast": {
+        "max_side": env_int("FAST_MAX_SIDE", 768),
+        "default_model": os.getenv("FAST_MODEL", "u2netp"),
+    },
+}
 
-logger = logging.getLogger("uvicorn.error")
+DEFAULT_MODE = os.getenv("DEFAULT_MODE", "balanced")
+if DEFAULT_MODE not in QUALITY_MODES:
+    logger.warning("Unsupported DEFAULT_MODE=%r. Falling back to balanced.", DEFAULT_MODE)
+    DEFAULT_MODE = "balanced"
+
+MAX_FILE_SIZE_MB = env_int("MAX_FILE_SIZE_MB", 10)
+MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024
+
+CPU_COUNT = os.cpu_count() or 2
+DEFAULT_THREAD_COUNT = 1 if DEPLOYMENT_TARGET == "render" else max(1, min(4, CPU_COUNT))
+INFERENCE_THREADS = env_int("INFERENCE_THREADS", DEFAULT_THREAD_COUNT)
+ENABLE_STARTUP_PRELOAD = env_flag("ENABLE_STARTUP_PRELOAD", True)
+
 
 def get_execution_providers():
-    """Return stable execution providers for ONNX Runtime.
-
-    CoreML can be faster on Apple Silicon, but it is not always stable across
-    local/dev environments. Keep CPU as the safe default and allow opting into
-    CoreML explicitly when desired.
-    """
+    """Return stable execution providers for ONNX Runtime."""
     import onnxruntime as ort
 
     available = set(ort.get_available_providers())
@@ -74,10 +112,9 @@ def get_execution_providers():
     return ["CPUExecutionProvider"]
 
 
-# ── Pre-load model session at startup ─────────────────────────────────
 _session_cache: dict[str, object] = {}
 _session_providers: dict[str, list[str]] = {}
-_model_ready = threading.Event()  # set once default model is loaded
+_model_ready = threading.Event()
 
 
 def create_session(model_name: str):
@@ -142,6 +179,7 @@ def resolve_model_and_mode(model_name: str | None, mode: str) -> tuple[str, int]
 def open_uploaded_image(contents: bytes):
     """Open the upload once and normalize EXIF orientation."""
     from PIL import Image, ImageOps
+
     try:
         image = ImageOps.exif_transpose(Image.open(io.BytesIO(contents)))
         image.load()
@@ -156,6 +194,7 @@ def open_uploaded_image(contents: bytes):
 def resize_for_inference(image, max_side: int):
     """Downscale large images before inference while preserving aspect ratio."""
     from PIL import Image
+
     width, height = image.size
     if max(width, height) <= max_side:
         return image, False
@@ -179,7 +218,6 @@ def clean_alpha_edges(image):
     arr = np.array(image)
     alpha = arr[:, :, 3].astype(np.float32)
 
-    # 1. Threshold: snap near-transparent / near-opaque pixels
     alpha[alpha < 45] = 0
     alpha[alpha > 210] = 255
 
@@ -188,22 +226,18 @@ def clean_alpha_edges(image):
     except ImportError:
         ndimage = None
 
-    if ndimage is not None and not IS_VERCEL:
-        # 2. Morphological operations: close holes then erode background fringe
+    if ndimage is not None:
         binary_mask = (alpha > 128).astype(np.uint8)
         mask_refined = ndimage.binary_closing(binary_mask, iterations=1).astype(np.uint8)
         eroded = ndimage.binary_erosion(mask_refined, iterations=1).astype(np.uint8)
 
-        # 3. Smooth the transition area
         boundary = mask_refined - eroded
         alpha[boundary == 1] = np.clip(alpha[boundary == 1] * 0.3, 0, 255)
 
-    # 4. High-quality smoothing for the mask
     alpha_img = Image.fromarray(alpha.astype(np.uint8), mode="L")
     alpha_img = alpha_img.filter(ImageFilter.SMOOTH_MORE)
     alpha = np.array(alpha_img)
 
-    # 5. Final clean-up of artifacts
     alpha[alpha < 20] = 0
     alpha[alpha > 235] = 255
 
@@ -218,8 +252,8 @@ def process_image(
     alpha_matting: bool,
 ) -> io.BytesIO:
     """Run the full background-removal pipeline off the event loop."""
-    from rembg import remove
     from PIL import Image
+    from rembg import remove
 
     original = open_uploaded_image(contents)
     orig_width, orig_height = original.size
@@ -255,11 +289,18 @@ def process_image(
     return buf
 
 
-
 @app.on_event("startup")
 async def preload_default_model():
     """Kick off model loading in a background thread so startup is non-blocking."""
-    if IS_VERCEL:
+    logger.info(
+        "[BG] Boot config target=%s default_model=%s default_mode=%s max_file_size_mb=%s preload=%s",
+        DEPLOYMENT_TARGET,
+        DEFAULT_MODEL_NAME,
+        DEFAULT_MODE,
+        MAX_FILE_SIZE_MB,
+        ENABLE_STARTUP_PRELOAD,
+    )
+    if not ENABLE_STARTUP_PRELOAD:
         return
 
     def _load():
@@ -276,19 +317,34 @@ async def preload_default_model():
 
 @app.get("/")
 async def root():
-    return {"message": "AI Background Remover API is running"}
+    return {
+        "message": "AI Background Remover API is running",
+        "deploymentTarget": DEPLOYMENT_TARGET,
+    }
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "deploymentTarget": DEPLOYMENT_TARGET,
+        "defaultModel": DEFAULT_MODEL_NAME,
+        "modelWarm": _model_ready.is_set(),
+    }
 
 
 @app.get("/config")
 async def config():
     return {
-        "isVercel": IS_VERCEL,
+        "deploymentTarget": DEPLOYMENT_TARGET,
         "defaultModel": DEFAULT_MODEL_NAME,
         "defaultMode": DEFAULT_MODE,
         "supportedModels": SUPPORTED_MODELS,
         "qualityModes": QUALITY_MODES,
         "maxFileSize": MAX_FILE_SIZE,
+        "maxFileSizeMb": MAX_FILE_SIZE_MB,
         "inferenceThreads": INFERENCE_THREADS,
+        "modelCacheDir": MODEL_CACHE_DIR,
     }
 
 
@@ -299,19 +355,20 @@ async def remove_background(
     mode: str = Form(DEFAULT_MODE),
     alpha_matting: bool = Form(False),
 ):
-    # ── Validate content type ──────────────────────────────────────────
     if image.content_type not in ALLOWED_TYPES:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file type: {image.content_type}. Accepted formats: jpg, jpeg, png, webp.",
         )
 
-    # ── Read & validate file size ──────────────────────────────────────
     contents = await image.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(
             status_code=400,
-            detail=f"File too large ({len(contents) / (1024*1024):.1f} MB). Maximum allowed size is 20 MB.",
+            detail=(
+                f"File too large ({len(contents) / (1024 * 1024):.1f} MB). "
+                f"Maximum allowed size is {MAX_FILE_SIZE_MB} MB."
+            ),
         )
 
     resolved_model, inference_max_side = resolve_model_and_mode(model, mode)
@@ -332,7 +389,6 @@ async def remove_background(
             detail=f"Background removal failed: {str(exc)}",
         ) from exc
 
-    # ── Return transparent PNG at full resolution ──────────────────────
     return StreamingResponse(
         buf,
         media_type="image/png",

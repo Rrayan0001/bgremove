@@ -1,4 +1,4 @@
-export default function Hero({ theme, onToggleTheme }) {
+export default function Hero({ theme, onToggleTheme, maxFileSizeMb = 10 }) {
   return (
     <header className="hero-shell">
       <div>
@@ -11,7 +11,7 @@ export default function Hero({ theme, onToggleTheme }) {
       <div className="hero-side">
         <div className="hero-meta">
           <span>JPG, PNG, WebP</span>
-          <span>10MB max</span>
+          <span>{maxFileSizeMb}MB max</span>
           <span>One-screen workflow</span>
         </div>
 

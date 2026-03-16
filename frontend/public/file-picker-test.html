@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      rel="icon"
+      type="image/png"
+      href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAsTAAALEwEAmpwYAAABH0lEQVQ4jZWSvUvDUBSAfdOkTfJRq61atG6C4KCDuLjp6Oikf4S7u7u7u7u7u7u7OLgpOAmCg4NDBx06OAh9vA5p8nC9vBf6wpV78/sdzz3vXoIgeNoYwwAwwACwgXvgA/fALVAD6oAB7IEMMAOMAYYQAnK5XG5tjHEBqU97n+ZzAAnMAAtIAK7z3gPOgTfA7UuY96mPOXADXAGFfVv3qffK6L4v8976nHuI0gAAtEOPZTMAsCMAAIU9y3oA0AkAVAAAFfbeAQCDOOf8BvAm5L2U3BcgkI4RImRRECJkXv/C/z8vRMikIETIpCBEyBwhQuYIEUKEzBEiZFIQREghQgqR7m0iRMgcIUIKESKECOlDCOnD/0L6EELIFiGE7BFC7uAbeAT/AB9qY6M6389kAAAAAElFTkSuQmCC"
+    />
+    <title>File Picker Test</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 40px;
+      }
+
+      .stack {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        max-width: 480px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stack">
+      <h1>File Picker Test</h1>
+      <p>If this button does not open the system file chooser, the issue is outside the React UI.</p>
+      <input id="picker" type="file" accept=".jpg,.jpeg,.png,.webp" />
+      <p id="status">No file selected.</p>
+    </div>
+
+    <script>
+      const picker = document.getElementById('picker');
+      const status = document.getElementById('status');
+      let awaitingSelection = false;
+      const supportsCancelEvent =
+        typeof HTMLInputElement !== 'undefined' && 'oncancel' in HTMLInputElement.prototype;
+
+      picker.addEventListener('click', () => {
+        picker.value = '';
+        awaitingSelection = true;
+        status.textContent = 'Opening file chooser...';
+      });
+
+      picker.addEventListener('change', () => {
+        awaitingSelection = false;
+        status.textContent = picker.files?.[0]
+          ? `Selected: ${picker.files[0].name}`
+          : 'No file selected.';
+      });
+
+      if (supportsCancelEvent) {
+        picker.addEventListener('cancel', () => {
+          awaitingSelection = false;
+          status.textContent = 'Chooser closed without selecting a file.';
+        });
+      } else {
+        window.addEventListener('focus', () => {
+          window.setTimeout(() => {
+            if (awaitingSelection && !picker.files?.length) {
+              awaitingSelection = false;
+              status.textContent = 'Chooser closed without selecting a file.';
+            }
+          }, 250);
+        });
+      }
+    </script>
+  </body>
+</html>
